@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+             (request.auth.token.email == "worshipwarehousesite@gmail.com" && 
+              request.auth.token.email_verified == true);
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'firstName', 'lastName', 'role', 'createdAt']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.firstName is string &&
+             data.lastName is string &&
+             data.role in ['admin', 'user'];
+    }
+
+    function isValidLibraryItem(data) {
+      return data.keys().hasAll(['id', 'userId', 'type', 'title', 'createdAt']) &&
+             data.id is string &&
+             data.userId is string &&
+             data.type in ['song', 'sermon'] &&
+             data.title is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isOwner(userId) && isValidUser(request.resource.data) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /library/{itemId} {
+      allow read: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || isAdmin());
+      allow create, update: if isAuthenticated() && (request.resource.data.userId == request.auth.uid || isAdmin());
+      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    match /test/{docId} {
+      allow read: if true;
+    }
+  }
+}

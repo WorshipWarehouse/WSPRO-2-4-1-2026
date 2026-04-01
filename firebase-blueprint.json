@@ -1,0 +1,56 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and subscription status",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "subscriptionStatus": { "type": "string", "enum": ["trialing", "active", "past_due", "canceled", "unpaid", "incomplete"] },
+        "trialEndDate": { "type": "string", "format": "date-time" },
+        "stripeCustomerId": { "type": "string" },
+        "plan": { "type": "string", "enum": ["single", "organization"] },
+        "organizationId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role", "firstName", "lastName"]
+    },
+    "LibraryItem": {
+      "title": "Library Item",
+      "description": "A saved song or sermon in the user's library",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "type": { "type": "string", "enum": ["song", "sermon"] },
+        "title": { "type": "string" },
+        "artist": { "type": "string" },
+        "ccliInfo": { "type": "string" },
+        "primaryText": { "type": "string" },
+        "secondaryText": { "type": "string" },
+        "linesPerLanguage": { "type": "number" },
+        "manuscript": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "type", "title", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/library/{itemId}": {
+      "schema": "LibraryItem",
+      "description": "User's song and sermon library"
+    },
+    "/test/connection": {
+      "schema": { "type": "object", "properties": { "status": { "type": "string" } } },
+      "description": "Connection test document"
+    }
+  }
+}
