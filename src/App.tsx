@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useMemo, useEffect, Component } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { v4 as uuidv4 } from 'uuid';
 import { saveAs } from 'file-saver';
 import { 
@@ -2305,6 +2306,7 @@ function App() {
 export default function AppWithErrorBoundary() {
   return (
     <ErrorBoundary>
+      <Analytics />
       <App />
     </ErrorBoundary>
   );
