@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Slide, SongData, LibrarySong, LibrarySermon, LibraryItem, Mode, SermonSlide, AppUser } from './types';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import pptxgen from 'pptxgenjs';
 
 import { 
@@ -2305,6 +2306,7 @@ function App() {
 export default function AppWithErrorBoundary() {
   return (
     <ErrorBoundary>
+      <SpeedInsights />
       <App />
     </ErrorBoundary>
   );
