@@ -1,5 +1,7 @@
 export type Mode = 'sermon' | 'multilingual' | 'stage-chord' | 'chord-editor';
 
+export type ActivePage = 'dashboard' | 'sermon' | 'multilingual' | 'stage-chord' | 'library' | 'profile';
+
 export interface Slide {
   id: string;
   section: string;
@@ -34,6 +36,7 @@ export interface LibrarySong {
   primaryText: string;
   secondaryText: string;
   linesPerLanguage: number;
+  mode?: 'multilingual' | 'stage-chord';
   createdAt: string;
 }
 
