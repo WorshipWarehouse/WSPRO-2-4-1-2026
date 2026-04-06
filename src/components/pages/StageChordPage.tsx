@@ -170,22 +170,6 @@ export const StageChordPage: React.FC<StageChordPageProps> = ({ user, setActiveP
     pres.writeFile({ fileName: `${songData.title || 'Song'}.pptx` });
   };
 
-  const exportText = () => {
-    let content = `{title: ${songData.title}}\n`;
-    if (key) content += `{key: ${key}}\n`;
-    content += '\n';
-    let lastSection = '';
-    songData.slides.forEach(slide => {
-      if (slide.section !== lastSection) { content += `{comment: ${slide.section}}\n`; lastSection = slide.section; }
-      if (slide.notes) content += slide.notes + '\n';
-      else content += slide.primaryLines.join('\n') + '\n';
-      content += '\n';
-    });
-    if (ccliInfo) content += `\n${ccliInfo}\n`;
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    saveAs(blob, `${songData.title || 'Song'}.txt`);
-  };
-
   const addToLibrary = async () => {
     if (!user) return;
     try {
@@ -244,7 +228,7 @@ export const StageChordPage: React.FC<StageChordPageProps> = ({ user, setActiveP
 
           <div className="bg-white p-5 rounded-2xl border border-neutral-200 space-y-3">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">Export</h3>
-            <ExportButtons onExportPro7={exportPro7} onExportPPTX={exportPPTX} onExportText={exportText} />
+            <ExportButtons onExportPro7={exportPro7} onExportPPTX={exportPPTX} />
           </div>
 
           <button onClick={addToLibrary} className="w-full py-3 bg-white border border-neutral-200 text-neutral-900 rounded-xl font-semibold hover:bg-neutral-50 transition-all flex items-center justify-center gap-2 text-sm">
