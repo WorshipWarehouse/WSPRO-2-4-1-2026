@@ -396,9 +396,19 @@ async function startServer() {
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    // In production, dist/server.js is inside dist/, so __dirname IS the dist folder.
+    // Fall back to process.cwd()/dist for cases where the server isn't bundled.
+    const scriptDir = typeof __dirname !== 'undefined' ? __dirname : process.cwd();
+    const distPath = fs.existsSync(path.join(scriptDir, 'index.html'))
+      ? scriptDir
+      : path.join(process.cwd(), 'dist');
+    console.log(`Serving static files from: ${distPath}`);
     app.use(express.static(distPath));
-    app.get('*', (_r, res) => res.sendFile(path.join(distPath, 'index.html')));
+    app.get('*', (_r, res) => {
+      const indexPath = path.join(distPath, 'index.html');
+      if (fs.existsSync(indexPath)) res.sendFile(indexPath);
+      else res.status(404).send('index.html not found. Run npm run build first.');
+    });
   }
 
   // Seed owner account on first boot if none exists
