@@ -85,3 +85,10 @@ export const configApi = {
     appleClientId: string;
   }>('/api/config'),
 };
+
+// Admin
+export const adminApi = {
+  getSettings: () => request<{ settings: Record<string, string>; raw: Record<string, string> }>('/api/admin/settings'),
+  updateSettings: (settings: Record<string, string>) =>
+    request<{ success: boolean; settings: Record<string, string> }>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+};

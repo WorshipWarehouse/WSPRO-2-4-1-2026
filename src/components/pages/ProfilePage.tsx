@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Building2, ShieldCheck, ChevronRight, AlertTriangle, Plus, Trash2, ArrowLeft, Mail, Save } from 'lucide-react';
+import { User, Building2, ShieldCheck, ChevronRight, AlertTriangle, Plus, Trash2, ArrowLeft, Mail, Save, Shield } from 'lucide-react';
 import { motion } from 'motion/react';
 import { userApi } from '../../lib/api';
 import type { AppUser, ActivePage } from '../../types';
@@ -164,6 +164,23 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Admin Settings Link */}
+      {user?.role === 'admin' && (
+        <button
+          onClick={() => setActivePage('admin-settings')}
+          className="w-full bg-white p-5 rounded-2xl border border-neutral-200 hover:border-neutral-400 hover:shadow-md transition-all flex items-center gap-4 text-left group"
+        >
+          <div className="w-10 h-10 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+            <Shield size={20} />
+          </div>
+          <div className="flex-1">
+            <h3 className="font-bold text-neutral-900">Admin Settings</h3>
+            <p className="text-sm text-neutral-500">Configure Stripe keys, Google/Apple OAuth, JWT secret, and more.</p>
+          </div>
+          <ChevronRight size={18} className="text-neutral-400" />
+        </button>
+      )}
 
       {/* Organization Management */}
       {user?.plan === 'organization' && (

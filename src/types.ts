@@ -1,6 +1,6 @@
 export type Mode = 'sermon' | 'multilingual' | 'stage-chord' | 'chord-editor';
 
-export type ActivePage = 'dashboard' | 'sermon' | 'multilingual' | 'stage-chord' | 'library' | 'profile';
+export type ActivePage = 'dashboard' | 'sermon' | 'multilingual' | 'stage-chord' | 'library' | 'profile' | 'admin-settings';
 
 export interface Slide {
   id: string;

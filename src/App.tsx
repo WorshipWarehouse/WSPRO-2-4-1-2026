@@ -31,6 +31,7 @@ import { MultilingualPage } from './components/pages/MultilingualPage';
 import { StageChordPage } from './components/pages/StageChordPage';
 import { ProfilePage } from './components/pages/ProfilePage';
 import { LibraryPage } from './components/pages/LibraryPage';
+import { AdminSettingsPage } from './components/pages/AdminSettingsPage';
 
 class ErrorBoundary extends (React.Component as any) {
   constructor(props: any) {
@@ -501,6 +502,7 @@ function App() {
             {activePage === 'stage-chord' && <StageChordPage user={user} setActivePage={setActivePage} initialData={stageChordInitial} />}
             {activePage === 'library' && <LibraryPage library={library} onLoadFromLibrary={onLoadFromLibrary} onRemoveFromLibrary={onRemoveFromLibrary} setActivePage={setActivePage} />}
             {activePage === 'profile' && <ProfilePage user={user} setUser={setUser} isSubscribed={isSubscribed} stripeConfig={stripeConfig} onSubscribe={handleSubscribe} authError={authError} setActivePage={setActivePage} />}
+            {activePage === 'admin-settings' && <AdminSettingsPage setActivePage={setActivePage} />}
           </AnimatePresence>
         )}
       </main>
