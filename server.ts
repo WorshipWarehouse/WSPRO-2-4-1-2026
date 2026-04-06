@@ -424,7 +424,11 @@ async function startServer() {
       : path.join(process.cwd(), 'dist');
     console.log(`Serving static files from: ${distPath}`);
     app.use(express.static(distPath));
-    app.get('*', (_r, res) => {
+    app.get('*', (req, res) => {
+      // Don't serve index.html for asset/API requests — only SPA page routes
+      if (req.path.startsWith('/api/') || req.path.startsWith('/assets/') || req.path.match(/\.\w+$/)) {
+        return res.status(404).json({ error: 'Not found' });
+      }
       const indexPath = path.join(distPath, 'index.html');
       if (fs.existsSync(indexPath)) res.sendFile(indexPath);
       else res.status(404).send('index.html not found. Run npm run build first.');
