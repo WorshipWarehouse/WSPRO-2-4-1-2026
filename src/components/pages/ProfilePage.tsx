@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
 import { User, Building2, ShieldCheck, ChevronRight, AlertTriangle, Plus, Trash2, ArrowLeft, Mail, Save } from 'lucide-react';
 import { motion } from 'motion/react';
-import { doc, updateDoc } from 'firebase/firestore';
-import { db } from '../../firebase';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { userApi } from '../../lib/api';
 import type { AppUser, ActivePage } from '../../types';
 
 interface ProfilePageProps {
@@ -22,13 +20,7 @@ interface ProfilePageProps {
 }
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({
-  user,
-  setUser,
-  isSubscribed,
-  stripeConfig,
-  onSubscribe,
-  authError,
-  setActivePage,
+  user, setUser, isSubscribed, stripeConfig, onSubscribe, authError, setActivePage,
 }) => {
   const [firstName, setFirstName] = useState(user?.firstName || '');
   const [lastName, setLastName] = useState(user?.lastName || '');
@@ -42,8 +34,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     if (!user) return;
     setIsSavingProfile(true);
     try {
-      await updateDoc(doc(db, 'users', user.uid), { firstName, lastName });
-      setUser({ ...user, firstName, lastName });
+      const { user: updated } = await userApi.updateProfile({ firstName, lastName });
+      setUser(updated as AppUser);
       setProfileSaved(true);
       setTimeout(() => setProfileSaved(false), 2000);
     } catch {
@@ -57,17 +49,11 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     if (!user || !orgEmailInput || (user.organizationEmails?.length || 0) >= 5) return;
     setIsUpdatingOrg(true);
     try {
-      const newEmails = [...(user.organizationEmails || []), orgEmailInput];
-      await updateDoc(doc(db, 'users', user.uid), { organizationEmails: newEmails });
-      const userQuery = query(collection(db, 'users'), where('email', '==', orgEmailInput));
-      const userDocs = await getDocs(userQuery);
-      if (!userDocs.empty) {
-        await updateDoc(doc(db, 'users', userDocs.docs[0].id), { subscriptionStatus: 'active', plan: 'organization' });
-      }
-      setUser({ ...user, organizationEmails: newEmails });
+      const { organizationEmails } = await userApi.addOrgMember(orgEmailInput);
+      setUser({ ...user, organizationEmails });
       setOrgEmailInput('');
-    } catch {
-      alert('Failed to add member.');
+    } catch (err: any) {
+      alert(err.message || 'Failed to add member.');
     } finally {
       setIsUpdatingOrg(false);
     }
@@ -77,14 +63,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
     if (!user) return;
     setIsUpdatingOrg(true);
     try {
-      const newEmails = (user.organizationEmails || []).filter(e => e !== emailToRemove);
-      await updateDoc(doc(db, 'users', user.uid), { organizationEmails: newEmails });
-      const userQuery = query(collection(db, 'users'), where('email', '==', emailToRemove));
-      const userDocs = await getDocs(userQuery);
-      if (!userDocs.empty) {
-        await updateDoc(doc(db, 'users', userDocs.docs[0].id), { subscriptionStatus: 'inactive', plan: undefined as any });
-      }
-      setUser({ ...user, organizationEmails: newEmails });
+      const { organizationEmails } = await userApi.removeOrgMember(emailToRemove);
+      setUser({ ...user, organizationEmails });
     } catch {
       alert('Failed to remove member.');
     } finally {
@@ -137,9 +117,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
       <div className="bg-white p-6 rounded-2xl border border-neutral-200 space-y-6">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-semibold uppercase tracking-wider text-neutral-400">Subscription</h3>
-          <div className={`px-3 py-1 rounded-full text-xs font-bold ${
-            user?.subscriptionStatus === 'active' || user?.subscriptionStatus === 'trialing' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'
-          }`}>
+          <div className={`px-3 py-1 rounded-full text-xs font-bold ${user?.subscriptionStatus === 'active' || user?.subscriptionStatus === 'trialing' ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
             {user?.subscriptionStatus === 'active' ? 'Active' : user?.subscriptionStatus === 'trialing' ? 'Trial' : 'Inactive'}
           </div>
         </div>
@@ -160,20 +138,14 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="p-5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-bold">Individual</span>
-              <User size={18} className="text-neutral-400" />
-            </div>
+            <div className="flex items-center justify-between"><span className="font-bold">Individual</span><User size={18} className="text-neutral-400" /></div>
             <p className="text-sm text-neutral-500">Single user access to all features.</p>
             <button onClick={() => onSubscribe(stripeConfig?.stripePriceIdSingle || '')} className="flex items-center justify-center gap-2 w-full py-2.5 bg-neutral-900 text-white rounded-lg font-semibold text-sm hover:bg-black transition-all">
               {user?.plan === 'single' && isSubscribed ? 'Manage' : 'Subscribe'} <ChevronRight size={14} />
             </button>
           </div>
           <div className="p-5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="font-bold">Organization</span>
-              <Building2 size={18} className="text-neutral-400" />
-            </div>
+            <div className="flex items-center justify-between"><span className="font-bold">Organization</span><Building2 size={18} className="text-neutral-400" /></div>
             <p className="text-sm text-neutral-500">Add up to 5 team members to your account.</p>
             <button onClick={() => onSubscribe(stripeConfig?.stripePriceIdOrg || '')} className="flex items-center justify-center gap-2 w-full py-2.5 bg-white border border-neutral-900 text-neutral-900 rounded-lg font-semibold text-sm hover:bg-neutral-100 transition-all">
               {user?.plan === 'organization' && isSubscribed ? 'Manage' : 'Subscribe'} <ChevronRight size={14} />
@@ -186,8 +158,7 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
           <div className="grid grid-cols-2 gap-2">
             {['Unlimited Exports', 'ProPresenter 7 Support', 'PowerPoint Support', 'Cloud Library', 'ChordPro Upload', user?.plan === 'organization' ? 'Up to 5 Team Members' : 'Individual Access'].map((f, i) => (
               <div key={i} className="flex items-center gap-2 text-sm text-neutral-600">
-                <div className="w-4 h-4 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center"><ShieldCheck size={10} /></div>
-                {f}
+                <div className="w-4 h-4 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center"><ShieldCheck size={10} /></div>{f}
               </div>
             ))}
           </div>
@@ -199,28 +170,14 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         <div className="bg-white p-6 rounded-2xl border border-neutral-200 space-y-5">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold uppercase tracking-wider text-neutral-400 flex items-center gap-2"><Building2 size={14} /> Team Members</h3>
-            <span className="text-xs font-bold bg-neutral-100 px-3 py-1 rounded-full text-neutral-500">
-              {user.organizationEmails?.length || 0} / 5
-            </span>
+            <span className="text-xs font-bold bg-neutral-100 px-3 py-1 rounded-full text-neutral-500">{user.organizationEmails?.length || 0} / 5</span>
           </div>
-
           <div className="flex gap-2">
-            <input
-              type="email"
-              placeholder="team@example.com"
-              value={orgEmailInput}
-              onChange={e => setOrgEmailInput(e.target.value)}
-              className="flex-1 px-4 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-neutral-900/5"
-            />
-            <button
-              onClick={addOrgEmail}
-              disabled={isUpdatingOrg || !orgEmailInput || (user.organizationEmails?.length || 0) >= 5}
-              className="px-5 py-2.5 bg-neutral-900 text-white rounded-xl font-semibold text-sm hover:bg-black transition-all disabled:opacity-50 flex items-center gap-2"
-            >
+            <input type="email" placeholder="team@example.com" value={orgEmailInput} onChange={e => setOrgEmailInput(e.target.value)} className="flex-1 px-4 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-neutral-900/5" />
+            <button onClick={addOrgEmail} disabled={isUpdatingOrg || !orgEmailInput || (user.organizationEmails?.length || 0) >= 5} className="px-5 py-2.5 bg-neutral-900 text-white rounded-xl font-semibold text-sm hover:bg-black transition-all disabled:opacity-50 flex items-center gap-2">
               <Plus size={14} /> Add
             </button>
           </div>
-
           <div className="space-y-2">
             {user.organizationEmails?.map((em, i) => (
               <div key={i} className="flex items-center justify-between p-3 bg-neutral-50 border border-neutral-200 rounded-xl">

@@ -7,8 +7,7 @@ import pptxgen from 'pptxgenjs';
 import { ExportButtons } from '../shared/ExportButtons';
 import { SermonSlidePreview } from '../shared/SlidePreview';
 import { writePresentation } from '../../lib/pro7-writer';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../../firebase';
+import { libraryApi } from '../../lib/api';
 import type { SermonSlide, AppUser, ActivePage } from '../../types';
 
 interface SermonPageProps {
@@ -68,14 +67,11 @@ export const SermonPage: React.FC<SermonPageProps> = ({ user, setActivePage }) =
   const addToLibrary = async () => {
     if (!user) return;
     try {
-      const id = uuidv4();
-      await setDoc(doc(db, 'library', id), {
+      await libraryApi.save({
         type: 'sermon',
-        id,
-        userId: user.uid,
+        id: uuidv4(),
         title: sermonTitle || 'Untitled Sermon',
         manuscript: sermonManuscript,
-        createdAt: new Date().toISOString(),
       });
       alert('Sermon added to library!');
     } catch {

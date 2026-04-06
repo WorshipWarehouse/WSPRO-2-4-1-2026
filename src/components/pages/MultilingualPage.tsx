@@ -8,8 +8,7 @@ import { ExportButtons } from '../shared/ExportButtons';
 import { SongSlidePreview } from '../shared/SlidePreview';
 import { writePresentation } from '../../lib/pro7-writer';
 import { parseChordProLine } from '../../utils/chordProLine';
-import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../../firebase';
+import { libraryApi } from '../../lib/api';
 import type { Slide, SongData, AppUser, ActivePage } from '../../types';
 
 interface MultilingualPageProps {
@@ -218,10 +217,9 @@ export const MultilingualPage: React.FC<MultilingualPageProps> = ({ user, setAct
   const addToLibrary = async () => {
     if (!user) return;
     try {
-      const id = uuidv4();
-      await setDoc(doc(db, 'library', id), {
-        type: 'song', id, userId: user.uid, title: title || 'Untitled', key, ccliInfo, artist: '',
-        primaryText, secondaryText, linesPerLanguage, mode: 'multilingual', createdAt: new Date().toISOString(),
+      await libraryApi.save({
+        type: 'song', id: uuidv4(), title: title || 'Untitled', key, ccliInfo, artist: '',
+        primaryText, secondaryText, linesPerLanguage, mode: 'multilingual',
       });
       alert('Song added to library!');
     } catch { alert('Failed to save to library.'); }
