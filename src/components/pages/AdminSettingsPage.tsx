@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Shield, Key, CreditCard, Globe, Eye, EyeOff, RefreshCw } from 'lucide-react';
 import { motion } from 'motion/react';
-import { adminApi } from '../../lib/api';
+import { ownerApi } from '../../lib/api';
 import type { ActivePage } from '../../types';
 
 interface AdminSettingsPageProps {
@@ -14,6 +14,7 @@ const FIELD_GROUPS = [
     icon: Key,
     color: 'bg-amber-50 text-amber-600',
     fields: [
+      { key: 'OWNER_EMAIL', label: 'Owner Email (you)', placeholder: 'your@email.com' },
       { key: 'JWT_SECRET', label: 'JWT Secret', placeholder: 'A random, high-entropy string', sensitive: true },
     ],
   },
@@ -57,108 +58,80 @@ export const AdminSettingsPage: React.FC<AdminSettingsPageProps> = ({ setActiveP
   const [error, setError] = useState('');
   const [showSensitive, setShowSensitive] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
+  useEffect(() => { loadSettings(); }, []);
 
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const { raw } = await adminApi.getSettings();
-      setSettings(raw);
-      setEditValues(raw);
+      const { settings: s } = await ownerApi.getSettings();
+      setSettings(s);
+      setEditValues(s);
     } catch (err: any) {
-      setError(err.message || 'Failed to load settings.');
+      setError(err.message || 'Failed to load settings. Only the owner can access this page.');
     } finally {
       setLoading(false);
     }
   };
 
   const handleSave = async () => {
-    setSaving(true);
-    setError('');
+    setSaving(true); setError('');
     try {
       const changed: Record<string, string> = {};
       for (const [k, v] of Object.entries(editValues)) {
         if (v !== settings[k]) changed[k] = v as string;
       }
       if (Object.keys(changed).length === 0) { setSaved(true); setTimeout(() => setSaved(false), 2000); setSaving(false); return; }
-      await adminApi.updateSettings(changed);
+      await ownerApi.updateSettings(changed);
       setSettings({ ...settings, ...changed });
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (err: any) {
       setError(err.message || 'Failed to save.');
-    } finally {
-      setSaving(false);
-    }
+    } finally { setSaving(false); }
   };
 
-  const toggleShow = (key: string) => setShowSensitive(prev => ({ ...prev, [key]: !prev[key] }));
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-[40vh]">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-neutral-900" />
-      </div>
-    );
-  }
+  if (loading) return <div className="flex items-center justify-center h-[40vh]"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-neutral-900" /></div>;
 
   return (
-    <motion.div key="admin" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-3xl mx-auto space-y-8">
+    <motion.div key="owner-settings" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="max-w-3xl mx-auto space-y-8">
       <div className="flex items-center gap-4">
         <button onClick={() => setActivePage('profile')} className="p-2 rounded-lg hover:bg-neutral-100 transition-colors">
           <ArrowLeft size={20} className="text-neutral-500" />
         </button>
         <div className="flex-1">
-          <h2 className="text-2xl font-bold tracking-tight text-neutral-900 flex items-center gap-2">
-            <Shield size={22} /> Admin Settings
-          </h2>
-          <p className="text-neutral-500 text-sm">Configure API keys, secrets, and service integrations.</p>
+          <h2 className="text-2xl font-bold tracking-tight text-neutral-900 flex items-center gap-2"><Shield size={22} /> Owner Settings</h2>
+          <p className="text-neutral-500 text-sm">Only you (the owner) can see and change these settings.</p>
         </div>
-        <button onClick={loadSettings} className="p-2 rounded-lg hover:bg-neutral-100 transition-colors" title="Reload">
-          <RefreshCw size={18} className="text-neutral-500" />
-        </button>
+        <button onClick={loadSettings} className="p-2 rounded-lg hover:bg-neutral-100 transition-colors" title="Reload"><RefreshCw size={18} className="text-neutral-500" /></button>
       </div>
 
-      {error && (
-        <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm font-medium">{error}</div>
-      )}
+      {error && <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm font-medium">{error}</div>}
 
       {FIELD_GROUPS.map((group) => (
         <div key={group.title} className="bg-white p-6 rounded-2xl border border-neutral-200 space-y-5">
           <div className="flex items-center gap-3">
-            <div className={`w-9 h-9 ${group.color} rounded-lg flex items-center justify-center`}>
-              <group.icon size={18} />
-            </div>
+            <div className={`w-9 h-9 ${group.color} rounded-lg flex items-center justify-center`}><group.icon size={18} /></div>
             <h3 className="font-bold text-neutral-900">{group.title}</h3>
           </div>
-
           <div className="space-y-4">
             {group.fields.map((field) => (
               <div key={field.key}>
                 <label className="block text-xs font-medium text-neutral-500 mb-1.5 uppercase tracking-wider">{field.label}</label>
                 <div className="relative">
                   <input
-                    type={field.sensitive && !showSensitive[field.key] ? 'password' : 'text'}
+                    type={(field as any).sensitive && !showSensitive[field.key] ? 'password' : 'text'}
                     value={editValues[field.key] || ''}
-                    onChange={e => setEditValues(prev => ({ ...prev, [field.key]: e.target.value }))}
+                    onChange={e => setEditValues(p => ({ ...p, [field.key]: e.target.value }))}
                     placeholder={field.placeholder}
                     className="w-full px-4 py-2.5 bg-neutral-50 border border-neutral-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-neutral-900/5 font-mono text-sm pr-10"
                   />
-                  {field.sensitive && (
-                    <button
-                      type="button"
-                      onClick={() => toggleShow(field.key)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                    >
+                  {(field as any).sensitive && (
+                    <button type="button" onClick={() => setShowSensitive(p => ({ ...p, [field.key]: !p[field.key] }))} className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600">
                       {showSensitive[field.key] ? <EyeOff size={16} /> : <Eye size={16} />}
                     </button>
                   )}
                 </div>
-                {editValues[field.key] !== settings[field.key] && (
-                  <p className="text-[10px] text-amber-600 mt-1 font-semibold">Modified (unsaved)</p>
-                )}
+                {editValues[field.key] !== settings[field.key] && <p className="text-[10px] text-amber-600 mt-1 font-semibold">Modified (unsaved)</p>}
               </div>
             ))}
           </div>
@@ -166,12 +139,8 @@ export const AdminSettingsPage: React.FC<AdminSettingsPageProps> = ({ setActiveP
       ))}
 
       <div className="flex items-center justify-between">
-        <p className="text-xs text-neutral-400">Settings are stored in <code className="bg-neutral-100 px-1.5 py-0.5 rounded">data/settings.json</code></p>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="flex items-center gap-2 px-6 py-3 bg-neutral-900 text-white rounded-xl font-semibold text-sm hover:bg-black transition-all disabled:opacity-50"
-        >
+        <p className="text-xs text-neutral-400">Stored in <code className="bg-neutral-100 px-1.5 py-0.5 rounded">data/settings.json</code> &middot; Only your account can access this.</p>
+        <button onClick={handleSave} disabled={saving} className="flex items-center gap-2 px-6 py-3 bg-neutral-900 text-white rounded-xl font-semibold text-sm hover:bg-black transition-all disabled:opacity-50">
           <Save size={16} /> {saved ? 'Saved!' : saving ? 'Saving...' : 'Save Settings'}
         </button>
       </div>

@@ -32,6 +32,7 @@ import { StageChordPage } from './components/pages/StageChordPage';
 import { ProfilePage } from './components/pages/ProfilePage';
 import { LibraryPage } from './components/pages/LibraryPage';
 import { AdminSettingsPage } from './components/pages/AdminSettingsPage';
+import { SetupPage } from './components/pages/SetupPage';
 
 class ErrorBoundary extends (React.Component as any) {
   constructor(props: any) {
@@ -82,6 +83,8 @@ function App() {
   const [isSignup, setIsSignup] = useState(false);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [showAuth, setShowAuth] = useState(false);
+  const [needsSetup, setNeedsSetup] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
 
   // Library load-from data
   const [multilingualInitial, setMultilingualInitial] = useState<any>(undefined);
@@ -99,7 +102,10 @@ function App() {
 
   // Fetch config
   useEffect(() => {
-    configApi.get().then(setStripeConfig).catch(() => {});
+    configApi.get().then((cfg: any) => {
+      setStripeConfig(cfg);
+      if (cfg.needsSetup) setNeedsSetup(true);
+    }).catch(() => {});
   }, []);
 
   // Fetch library
@@ -121,9 +127,10 @@ function App() {
       return;
     }
     authApi.me()
-      .then(({ user: u }) => {
+      .then(({ user: u, isOwner: owner }) => {
         setUser(u as AppUser);
         setIsAuthenticated(true);
+        setIsOwner(!!owner);
       })
       .catch(() => {
         setToken(null);
@@ -145,6 +152,16 @@ function App() {
     }
   }, [isAuthenticated, isSubscribed, activePage]);
 
+  const completeAuth = useCallback((token: string, u: AppUser) => {
+    setToken(token);
+    setUser(u);
+    setIsAuthenticated(true);
+    setNeedsSetup(false);
+    // Check owner status
+    authApi.me().then(({ isOwner: o }) => setIsOwner(!!o)).catch(() => {});
+    fetchLibrary();
+  }, [fetchLibrary]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
@@ -154,16 +171,10 @@ function App() {
         if (!firstName || !lastName) { setAuthError('First and last name are required.'); return; }
         if (loginPassword.length < 6) { setAuthError('Password must be at least 6 characters.'); return; }
         const { token, user: u } = await authApi.signup({ email: loginEmail, password: loginPassword, firstName, lastName });
-        setToken(token);
-        setUser(u as AppUser);
-        setIsAuthenticated(true);
-        fetchLibrary();
+        completeAuth(token, u as AppUser);
       } else {
         const { token, user: u } = await authApi.login({ email: loginEmail, password: loginPassword });
-        setToken(token);
-        setUser(u as AppUser);
-        setIsAuthenticated(true);
-        fetchLibrary();
+        completeAuth(token, u as AppUser);
       }
     } catch (err: any) {
       setAuthError(err.message || 'Authentication failed');
@@ -188,10 +199,7 @@ function App() {
         callback: async (response: any) => {
           try {
             const { token, user: u } = await authApi.google(response.credential);
-            setToken(token);
-            setUser(u as AppUser);
-            setIsAuthenticated(true);
-            fetchLibrary();
+            completeAuth(token, u as AppUser);
           } catch (err: any) {
             setAuthError(err.message || 'Google login failed');
           }
@@ -227,10 +235,7 @@ function App() {
         response.user?.name?.firstName,
         response.user?.name?.lastName
       );
-      setToken(token);
-      setUser(u as AppUser);
-      setIsAuthenticated(true);
-      fetchLibrary();
+      completeAuth(token, u as AppUser);
     } catch (err: any) {
       if (err.message !== 'popup_closed_by_user') {
         setAuthError(err.message || 'Apple authentication failed');
@@ -344,6 +349,13 @@ function App() {
         </div>
       )}
 
+      {/* Setup wizard (shown when no users exist) */}
+      {needsSetup && !isAuthenticated && !isAuthLoading && (
+        <SetupPage onComplete={(token, u) => completeAuth(token, u)} />
+      )}
+
+      {/* Main content (hidden during setup) */}
+      {!needsSetup && (
       <main className="max-w-7xl mx-auto p-6 md:p-8">
         {isAuthLoading ? (
           <div className="flex items-center justify-center h-[60vh]">
@@ -501,11 +513,12 @@ function App() {
             {activePage === 'multilingual' && <MultilingualPage user={user} setActivePage={setActivePage} initialData={multilingualInitial} />}
             {activePage === 'stage-chord' && <StageChordPage user={user} setActivePage={setActivePage} initialData={stageChordInitial} />}
             {activePage === 'library' && <LibraryPage library={library} onLoadFromLibrary={onLoadFromLibrary} onRemoveFromLibrary={onRemoveFromLibrary} setActivePage={setActivePage} />}
-            {activePage === 'profile' && <ProfilePage user={user} setUser={setUser} isSubscribed={isSubscribed} stripeConfig={stripeConfig} onSubscribe={handleSubscribe} authError={authError} setActivePage={setActivePage} />}
+            {activePage === 'profile' && <ProfilePage user={user} setUser={setUser} isSubscribed={isSubscribed} isOwner={isOwner} stripeConfig={stripeConfig} onSubscribe={handleSubscribe} authError={authError} setActivePage={setActivePage} />}
             {activePage === 'admin-settings' && <AdminSettingsPage setActivePage={setActivePage} />}
           </AnimatePresence>
         )}
       </main>
+      )}
 
       <footer className="max-w-7xl mx-auto px-6 py-8 border-t border-neutral-200 flex flex-col md:flex-row items-center justify-between gap-4 text-neutral-400 text-xs font-medium uppercase tracking-widest">
         <p>&copy; 2026 WorshipSlides Pro</p>

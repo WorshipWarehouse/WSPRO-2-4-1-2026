@@ -8,6 +8,7 @@ interface ProfilePageProps {
   user: AppUser | null;
   setUser: (user: AppUser) => void;
   isSubscribed: boolean;
+  isOwner: boolean;
   stripeConfig: {
     stripePriceIdSingle: string;
     stripePriceIdOrg: string;
@@ -20,7 +21,7 @@ interface ProfilePageProps {
 }
 
 export const ProfilePage: React.FC<ProfilePageProps> = ({
-  user, setUser, isSubscribed, stripeConfig, onSubscribe, authError, setActivePage,
+  user, setUser, isSubscribed, isOwner, stripeConfig, onSubscribe, authError, setActivePage,
 }) => {
   const [firstName, setFirstName] = useState(user?.firstName || '');
   const [lastName, setLastName] = useState(user?.lastName || '');
@@ -165,8 +166,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
         </div>
       </div>
 
-      {/* Admin Settings Link */}
-      {user?.role === 'admin' && (
+      {/* Owner Settings Link (only visible to the owner, not regular admins) */}
+      {isOwner && (
         <button
           onClick={() => setActivePage('admin-settings')}
           className="w-full bg-white p-5 rounded-2xl border border-neutral-200 hover:border-neutral-400 hover:shadow-md transition-all flex items-center gap-4 text-left group"
@@ -175,8 +176,8 @@ export const ProfilePage: React.FC<ProfilePageProps> = ({
             <Shield size={20} />
           </div>
           <div className="flex-1">
-            <h3 className="font-bold text-neutral-900">Admin Settings</h3>
-            <p className="text-sm text-neutral-500">Configure Stripe keys, Google/Apple OAuth, JWT secret, and more.</p>
+            <h3 className="font-bold text-neutral-900">Owner Settings</h3>
+            <p className="text-sm text-neutral-500">Manage Stripe keys, Google/Apple OAuth, JWT secret, and app URL. Only you can see this.</p>
           </div>
           <ChevronRight size={18} className="text-neutral-400" />
         </button>

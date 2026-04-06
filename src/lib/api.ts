@@ -39,7 +39,7 @@ export const authApi = {
   apple: (idToken: string, firstName?: string, lastName?: string) =>
     request<{ token: string; user: any }>('/api/auth/apple', { method: 'POST', body: JSON.stringify({ idToken, firstName, lastName }) }),
 
-  me: () => request<{ user: any }>('/api/auth/me'),
+  me: () => request<{ user: any; isOwner: boolean }>('/api/auth/me'),
 
   logout: () => request('/api/auth/logout', { method: 'POST' }),
 };
@@ -86,9 +86,16 @@ export const configApi = {
   }>('/api/config'),
 };
 
-// Admin
-export const adminApi = {
-  getSettings: () => request<{ settings: Record<string, string>; raw: Record<string, string> }>('/api/admin/settings'),
+// Owner settings (only accessible by OWNER_EMAIL)
+export const ownerApi = {
+  getSettings: () => request<{ settings: Record<string, string> }>('/api/owner/settings'),
   updateSettings: (settings: Record<string, string>) =>
-    request<{ success: boolean; settings: Record<string, string> }>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+    request<{ success: boolean; settings: Record<string, string> }>('/api/owner/settings', { method: 'PUT', body: JSON.stringify(settings) }),
+};
+
+// Setup (only works when no users exist)
+export const setupApi = {
+  status: () => request<{ needsSetup: boolean; hasOwner: boolean }>('/api/setup/status'),
+  run: (data: { ownerEmail: string; password: string; firstName?: string; lastName?: string; settings?: Record<string, string> }) =>
+    request<{ token: string; user: any }>('/api/setup', { method: 'POST', body: JSON.stringify(data) }),
 };

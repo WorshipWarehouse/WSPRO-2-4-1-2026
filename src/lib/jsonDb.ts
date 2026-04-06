@@ -46,6 +46,10 @@ export interface DbUser {
 function loadUsers(): DbUser[] { return readJson<DbUser[]>(USERS_FILE, []); }
 function saveUsers(users: DbUser[]) { writeJson(USERS_FILE, users); }
 
+export function hasAnyUsers(): boolean {
+  return loadUsers().length > 0;
+}
+
 export const usersDb = {
   findByEmail(email: string): DbUser | undefined {
     return loadUsers().find(u => u.email === email);
@@ -114,6 +118,7 @@ export const libraryDb = {
 // ── Settings (admin-editable secrets/config) ──
 
 export interface AppSettings {
+  OWNER_EMAIL: string;
   JWT_SECRET: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_PUBLISHABLE_KEY: string;
@@ -127,6 +132,7 @@ export interface AppSettings {
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
+  OWNER_EMAIL: process.env.OWNER_EMAIL || '',
   JWT_SECRET: process.env.JWT_SECRET || 'super-secret-key-change-in-production',
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || '',
