@@ -1,6 +1,8 @@
 import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -8,10 +10,11 @@ import { fileURLToPath } from 'url';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import Stripe from 'stripe';
-import fs from 'fs';
 import multer from 'multer';
-import { initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import fs from 'fs';
+import { OAuth2Client } from 'google-auth-library';
+import { usersDb, libraryDb, settingsDb, hasAnyUsers } from './src/lib/jsonDb.ts';
+import type { DbUser } from './src/lib/jsonDb.ts';
 import { parsePro7File } from './src/utils/pro7Parser.ts';
 import { analyzePro7File } from './src/utils/pro7FileDetector.ts';
 import { transposeLyrics } from './src/utils/chordTransposer.ts';
@@ -22,459 +25,389 @@ import { transposeChordNotes } from './src/utils/notesTransposer.ts';
 dotenv.config();
 
 const upload = multer({ storage: multer.memoryStorage() });
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-key';
+const BCRYPT_ROUNDS = 12;
 const PORT = process.env.PORT || 3000;
-const APP_URL = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 
-// Stripe Initialization
+function s(key: string): string { return settingsDb.get(key as any) || ''; }
+
+// Stripe (lazy)
 let stripeClient: Stripe | null = null;
+let stripeKeyUsed = '';
 function getStripe(): Stripe {
-  const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) {
-    console.error('CRITICAL: STRIPE_SECRET_KEY is missing from environment variables.');
-    throw new Error('Stripe is not configured. Please add STRIPE_SECRET_KEY to settings.');
-  }
-  if (!stripeClient) {
-    console.log('Initializing Stripe client...');
-    stripeClient = new Stripe(key);
-  }
+  const key = s('STRIPE_SECRET_KEY');
+  if (!key) throw new Error('Stripe not configured. Set STRIPE_SECRET_KEY in Owner Settings.');
+  if (!stripeClient || stripeKeyUsed !== key) { stripeClient = new Stripe(key); stripeKeyUsed = key; }
   return stripeClient;
 }
 
-// Firebase Admin Initialization
-let db: any = null;
-function getDb() {
-  if (!db) {
-    try {
-      console.log('Initializing Firebase Admin...');
-      const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-      if (!fs.existsSync(configPath)) {
-        throw new Error(`Firebase config file not found at ${configPath}`);
-      }
-      const firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-      console.log(`Using Firebase Project: ${firebaseConfig.projectId}, Database: ${firebaseConfig.firestoreDatabaseId}`);
-      
-      initializeApp({
-        projectId: firebaseConfig.projectId,
-      });
-      db = getFirestore(firebaseConfig.firestoreDatabaseId);
-      console.log('Firebase Admin initialized successfully.');
-    } catch (error: any) {
-      console.error('Failed to initialize Firebase Admin:', error);
-      throw error;
-    }
-  }
-  return db;
+// Google OAuth (lazy)
+let googleClient: OAuth2Client | null = null;
+let googleIdUsed = '';
+function getGoogleClient(): OAuth2Client {
+  const id = s('GOOGLE_CLIENT_ID');
+  if (!googleClient || googleIdUsed !== id) { googleClient = new OAuth2Client(id); googleIdUsed = id; }
+  return googleClient;
 }
+
+// JWT
+interface JwtPayload { uid: string; email: string }
+function signToken(p: JwtPayload): string { return jwt.sign(p, s('JWT_SECRET') || 'default-dev-secret', { expiresIn: '7d' }); }
+function verifyToken(t: string): JwtPayload { return jwt.verify(t, s('JWT_SECRET') || 'default-dev-secret') as JwtPayload; }
+
+interface AuthRequest extends Request { user?: JwtPayload }
+
+function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  const h = req.headers.authorization;
+  const token = h?.startsWith('Bearer ') ? h.slice(7) : req.cookies?.token;
+  if (!token) return res.status(401).json({ error: 'Authentication required' });
+  try { req.user = verifyToken(token); next(); }
+  catch { return res.status(401).json({ error: 'Invalid or expired token' }); }
+}
+
+function ownerMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+  if (!req.user) return res.status(401).json({ error: 'Authentication required' });
+  const ownerEmail = s('OWNER_EMAIL');
+  if (!ownerEmail || req.user.email !== ownerEmail) {
+    return res.status(403).json({ error: 'Owner access required. Only the designated owner can manage settings.' });
+  }
+  next();
+}
+
+function safe(u: DbUser) { const { passwordHash, ...rest } = u; return rest; }
+function cookie(res: Response, token: string) { res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 7*24*60*60*1000 }); }
 
 async function startServer() {
   const app = express();
-  
-  // Webhook needs raw body
-  app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-    const sig = req.headers['stripe-signature'];
-    let event;
 
+  // Stripe webhook (raw body)
+  app.post('/api/webhook', express.raw({ type: 'application/json' }), async (req: Request, res: Response) => {
     try {
       const stripe = getStripe();
-      const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-      
-      if (!webhookSecret) {
-        console.error('CRITICAL: STRIPE_WEBHOOK_SECRET is missing. Webhook verification will fail.');
-        return res.status(500).send('Webhook secret not configured');
-      }
-
-      event = stripe.webhooks.constructEvent(
-        req.body,
-        sig || '',
-        webhookSecret
-      );
-      console.log(`Webhook received: ${event.type} [${event.id}]`);
-    } catch (err: any) {
-      console.error(`Webhook Signature Verification Failed: ${err.message}`);
-      return res.status(400).send(`Webhook Error: ${err.message}`);
-    }
-
-    // Handle the event
-    const db = getDb();
-    const stripe = getStripe();
-    switch (event.type) {
-      case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session;
-        const userId = session.client_reference_id;
-        const stripeCustomerId = session.customer as string;
-        const subscriptionId = session.subscription as string;
-
-        if (userId) {
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-          const priceId = subscription.items.data[0].price.id;
-          const plan = (session.metadata?.plan as 'organization' | 'single') || (priceId === process.env.STRIPE_PRICE_ID_ORG ? 'organization' : 'single');
-
-          const updateData: any = {
-            stripeCustomerId,
-            subscriptionStatus: subscription.status,
-            plan,
-            trialEndDate: subscription.trial_end ? new Date(subscription.trial_end * 1000).toISOString() : null,
-          };
-
-          if (plan === 'organization') {
-            const userDoc = await db.collection('users').doc(userId).get();
-            if (!userDoc.exists || !userDoc.data()?.organizationEmails) {
-              updateData.organizationEmails = [];
-            }
+      const secret = s('STRIPE_WEBHOOK_SECRET');
+      if (!secret) return res.status(500).send('Webhook secret not configured');
+      const event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'] || '', secret);
+      switch (event.type) {
+        case 'checkout.session.completed': {
+          const session = event.data.object as Stripe.Checkout.Session;
+          const uid = session.client_reference_id;
+          if (uid) {
+            const sub = await stripe.subscriptions.retrieve(session.subscription as string);
+            const plan = (session.metadata?.plan as string) || (sub.items.data[0].price.id === s('STRIPE_PRICE_ID_ORG') ? 'organization' : 'single');
+            const updates: Partial<DbUser> = { stripeCustomerId: session.customer as string, subscriptionStatus: sub.status, plan, trialEndDate: sub.trial_end ? new Date(sub.trial_end*1000).toISOString() : null };
+            const existing = usersDb.findById(uid);
+            if (plan === 'organization' && !existing?.organizationEmails) updates.organizationEmails = [];
+            usersDb.update(uid, updates);
           }
-
-          await db.collection('users').doc(userId).update(updateData);
+          break;
         }
-        break;
-      }
-      case 'customer.subscription.updated':
-      case 'customer.subscription.deleted':
-      case 'customer.subscription.created': {
-        const subscription = event.data.object as Stripe.Subscription;
-        const stripeCustomerId = subscription.customer as string;
-        console.log(`Processing subscription ${event.type} for customer ${stripeCustomerId}`);
-        
-        const userSnapshot = await db.collection('users').where('stripeCustomerId', '==', stripeCustomerId).limit(1).get();
-        if (!userSnapshot.empty) {
-          const userDoc = userSnapshot.docs[0];
-          const status = subscription.status;
-          console.log(`Updating user ${userDoc.id} status to ${status}`);
-          await userDoc.ref.update({
-            subscriptionStatus: status,
-            trialEndDate: subscription.trial_end ? new Date(subscription.trial_end * 1000).toISOString() : null,
-          });
-        } else {
-          console.warn(`No user found with stripeCustomerId: ${stripeCustomerId}`);
+        case 'customer.subscription.updated': case 'customer.subscription.deleted': case 'customer.subscription.created': {
+          const sub = event.data.object as Stripe.Subscription;
+          const u = usersDb.findByField('stripeCustomerId', sub.customer as string);
+          if (u) usersDb.update(u.uid, { subscriptionStatus: sub.status, trialEndDate: sub.trial_end ? new Date(sub.trial_end*1000).toISOString() : null });
+          break;
         }
-        break;
       }
-      case 'invoice.payment_succeeded': {
-        const invoice = event.data.object as Stripe.Invoice;
-        const stripeCustomerId = invoice.customer as string;
-        console.log(`Payment succeeded for customer ${stripeCustomerId}`);
-        break;
-      }
-      default:
-        console.log(`Unhandled event type ${event.type}`);
-    }
-
-    res.json({ received: true });
+      res.json({ received: true });
+    } catch (err: any) { res.status(400).send(`Webhook Error: ${err.message}`); }
   });
 
-  // Regular middleware
   app.use(express.json());
   app.use(cookieParser());
+  app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 
-  // Security Headers
-  app.use(helmet({
-    contentSecurityPolicy: false,
-    crossOriginEmbedderPolicy: false,
+  const appUrl = () => (s('APP_URL') || `http://localhost:${PORT}`).replace(/\/$/, '');
+
+  app.use(cors({
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      const ok = [appUrl(), 'http://localhost:3000', 'http://localhost:5173'].some(a => origin.startsWith(a))
+        || origin.endsWith('.run.app') || origin.includes('localhost') || process.env.NODE_ENV !== 'production';
+      ok ? cb(null, true) : cb(new Error('CORS'));
+    },
+    credentials: true, methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+    allowedHeaders: ['Content-Type','Authorization','X-Requested-With'],
   }));
 
-  // CORS Configuration
-  const corsOptions = {
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      // Allow requests with no origin (like mobile apps or curl)
-      if (!origin) return callback(null, true);
-      
-      const allowedOrigins = [APP_URL, 'http://localhost:3000', 'http://localhost:5173'];
-      const isAllowed = 
-        allowedOrigins.some(ao => origin.startsWith(ao)) || 
-        origin.endsWith('.run.app') || 
-        origin.includes('localhost') ||
-        process.env.NODE_ENV !== 'production';
-      
-      if (!isAllowed) {
-        console.warn(`CORS blocked for origin: ${origin}. Allowed origins: ${allowedOrigins.join(', ')}. APP_URL: ${APP_URL}`);
-      }
+  // ──────── PUBLIC ────────
 
-      if (isAllowed) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  };
-  app.use(cors(corsOptions));
+  app.get('/health', (_r, res) => res.json({ status: 'ok' }));
 
-  // Health Check
-  app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-  });
-
-  // API Config Endpoint
-  app.get('/api/config', (req, res) => {
-    console.log('GET /api/config called');
-    const config = {
-      appUrl: APP_URL,
-      geminiAvailable: !!process.env.GEMINI_API_KEY,
+  app.get('/api/config', (_r, res) => {
+    res.json({
+      appUrl: appUrl(),
       environment: process.env.NODE_ENV || 'development',
-      stripePublicKey: process.env.STRIPE_PUBLISHABLE_KEY,
-      stripePriceIdSingle: process.env.STRIPE_PRICE_ID_SINGLE || '',
-      stripePriceIdOrg: process.env.STRIPE_PRICE_ID_ORG || '',
-      stripeConfigured: !!process.env.STRIPE_SECRET_KEY,
-    };
-    console.log('Returning config:', { ...config, stripePublicKey: config.stripePublicKey ? 'PRESENT' : 'MISSING' });
-    res.json(config);
+      stripePublicKey: s('STRIPE_PUBLISHABLE_KEY'),
+      stripePriceIdSingle: s('STRIPE_PRICE_ID_SINGLE'),
+      stripePriceIdOrg: s('STRIPE_PRICE_ID_ORG'),
+      stripeConfigured: !!s('STRIPE_SECRET_KEY'),
+      googleClientId: s('GOOGLE_CLIENT_ID'),
+      appleClientId: s('APPLE_CLIENT_ID'),
+      needsSetup: !hasAnyUsers(),
+    });
   });
 
-  // Stripe Checkout Session
-  app.post('/api/create-checkout-session', async (req, res) => {
-    const { priceId, userId, email } = req.body;
-    console.log(`Creating checkout session for user: ${userId}, email: ${email}, priceId: ${priceId}`);
+  // ──────── SETUP WIZARD (only works when no users exist) ────────
 
+  app.get('/api/setup/status', (_r, res) => {
+    res.json({ needsSetup: !hasAnyUsers(), hasOwner: !!s('OWNER_EMAIL') });
+  });
+
+  app.post('/api/setup', async (req: Request, res: Response) => {
+    if (hasAnyUsers()) return res.status(403).json({ error: 'Setup already completed. Settings can only be changed by the owner.' });
+
+    const { ownerEmail, settings: newSettings, password, firstName, lastName } = req.body;
+    if (!ownerEmail || !password) return res.status(400).json({ error: 'Owner email and password are required.' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+
+    try {
+      // Save settings including OWNER_EMAIL
+      const settingsToSave: Record<string, string> = { OWNER_EMAIL: ownerEmail, ...(newSettings || {}) };
+      settingsDb.save(settingsToSave);
+
+      // Reset lazy clients
+      stripeClient = null; stripeKeyUsed = '';
+      googleClient = null; googleIdUsed = '';
+
+      // Create owner account
+      const uid = `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      const owner: DbUser = {
+        uid, email: ownerEmail, passwordHash,
+        firstName: firstName || 'Owner', lastName: lastName || '',
+        role: 'admin', authProvider: 'email', subscriptionStatus: 'active',
+        createdAt: new Date().toISOString(),
+      };
+      usersDb.create(owner);
+
+      const token = signToken({ uid, email: ownerEmail });
+      cookie(res, token);
+      res.json({ token, user: safe(owner) });
+    } catch (err: any) {
+      console.error('Setup error:', err);
+      res.status(500).json({ error: 'Setup failed.' });
+    }
+  });
+
+  // ──────── AUTH ────────
+
+  app.post('/api/auth/signup', async (req: Request, res: Response) => {
+    const { email, password, firstName, lastName } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
+    if (!firstName || !lastName) return res.status(400).json({ error: 'First and last name are required.' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+    try {
+      if (usersDb.findByEmail(email)) return res.status(409).json({ error: 'An account with this email already exists.' });
+      const uid = `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+      const isOwner = email === s('OWNER_EMAIL');
+      const isFirst = !hasAnyUsers();
+      const newUser: DbUser = {
+        uid, email, passwordHash, firstName, lastName,
+        role: (isOwner || isFirst) ? 'admin' : 'user',
+        authProvider: 'email',
+        subscriptionStatus: (isOwner || isFirst) ? 'active' : 'inactive',
+        createdAt: new Date().toISOString(),
+      };
+      usersDb.create(newUser);
+      const token = signToken({ uid, email });
+      cookie(res, token);
+      res.json({ token, user: safe(newUser) });
+    } catch (err: any) {
+      console.error('Signup error:', err);
+      res.status(500).json({ error: 'Failed to create account.' });
+    }
+  });
+
+  app.post('/api/auth/login', async (req: Request, res: Response) => {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' });
+    try {
+      const u = usersDb.findByEmail(email);
+      if (!u) return res.status(401).json({ error: 'Invalid email or password.' });
+      if (!u.passwordHash) return res.status(401).json({ error: `This account uses ${u.authProvider || 'social'} login.` });
+      if (!(await bcrypt.compare(password, u.passwordHash))) return res.status(401).json({ error: 'Invalid email or password.' });
+      const token = signToken({ uid: u.uid, email: u.email });
+      cookie(res, token);
+      res.json({ token, user: safe(u) });
+    } catch (err: any) { console.error('Login error:', err); res.status(500).json({ error: 'Login failed.' }); }
+  });
+
+  app.post('/api/auth/google', async (req: Request, res: Response) => {
+    const tok = req.body.idToken || req.body.credential;
+    if (!tok) return res.status(400).json({ error: 'Google credential is required.' });
+    try {
+      const ticket = await getGoogleClient().verifyIdToken({ idToken: tok, audience: s('GOOGLE_CLIENT_ID') || undefined });
+      const p = ticket.getPayload();
+      if (!p?.email) return res.status(400).json({ error: 'Invalid Google token.' });
+      let u = usersDb.findByEmail(p.email);
+      if (!u) {
+        const isOwner = p.email === s('OWNER_EMAIL');
+        u = usersDb.create({ uid: `g_${p.sub}`, email: p.email, firstName: p.given_name||'', lastName: p.family_name||'', role: isOwner ? 'admin' : 'user', authProvider: 'google', googleId: p.sub, subscriptionStatus: isOwner ? 'active' : 'inactive', createdAt: new Date().toISOString() });
+      } else if (!u.googleId) {
+        usersDb.update(u.uid, { googleId: p.sub, authProvider: u.authProvider === 'email' ? 'email+google' : 'google' });
+        u = usersDb.findById(u.uid)!;
+      }
+      const token = signToken({ uid: u.uid, email: u.email });
+      cookie(res, token);
+      res.json({ token, user: safe(u) });
+    } catch (err: any) { res.status(401).json({ error: 'Google auth failed: ' + (err.message || '') }); }
+  });
+
+  app.post('/api/auth/apple', async (req: Request, res: Response) => {
+    const { idToken, firstName, lastName } = req.body;
+    if (!idToken) return res.status(400).json({ error: 'Apple ID token is required.' });
+    try {
+      const decoded = jwt.decode(idToken, { complete: true });
+      if (!decoded || typeof decoded === 'string') return res.status(400).json({ error: 'Invalid Apple token.' });
+      const ap = decoded.payload as any;
+      if (!ap.email) return res.status(400).json({ error: 'Apple token missing email.' });
+      if (ap.iss !== 'https://appleid.apple.com') return res.status(401).json({ error: 'Invalid issuer.' });
+      const acid = s('APPLE_CLIENT_ID');
+      if (acid && ap.aud !== acid) return res.status(401).json({ error: 'Invalid audience.' });
+      let u = usersDb.findByEmail(ap.email);
+      if (!u) {
+        const isOwner = ap.email === s('OWNER_EMAIL');
+        u = usersDb.create({ uid: `a_${ap.sub.slice(0,20)}`, email: ap.email, firstName: firstName||'', lastName: lastName||'', role: isOwner ? 'admin' : 'user', authProvider: 'apple', appleId: ap.sub, subscriptionStatus: isOwner ? 'active' : 'inactive', createdAt: new Date().toISOString() });
+      } else if (!u.appleId) {
+        usersDb.update(u.uid, { appleId: ap.sub, authProvider: u.authProvider ? `${u.authProvider}+apple` : 'apple' });
+        u = usersDb.findById(u.uid)!;
+      }
+      const token = signToken({ uid: u.uid, email: u.email });
+      cookie(res, token);
+      res.json({ token, user: safe(u) });
+    } catch (err: any) { res.status(401).json({ error: 'Apple auth failed.' }); }
+  });
+
+  app.get('/api/auth/me', authMiddleware, (req: AuthRequest, res: Response) => {
+    const u = usersDb.findById(req.user!.uid);
+    if (!u) return res.status(404).json({ error: 'User not found.' });
+    res.json({ user: safe(u), isOwner: u.email === s('OWNER_EMAIL') });
+  });
+
+  app.post('/api/auth/logout', (_r, res) => { res.clearCookie('token'); res.json({ success: true }); });
+
+  // ──────── PROFILE ────────
+
+  app.put('/api/users/profile', authMiddleware, (req: AuthRequest, res: Response) => {
+    const u = usersDb.update(req.user!.uid, { firstName: req.body.firstName, lastName: req.body.lastName });
+    if (!u) return res.status(404).json({ error: 'Not found.' });
+    res.json({ user: safe(u) });
+  });
+
+  // ──────── ORGANIZATION ────────
+
+  app.post('/api/users/org/add', authMiddleware, (req: AuthRequest, res: Response) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required.' });
+    const u = usersDb.findById(req.user!.uid);
+    if (!u) return res.status(404).json({ error: 'Not found.' });
+    if (u.plan !== 'organization') return res.status(403).json({ error: 'Organization plan required.' });
+    const emails = u.organizationEmails || [];
+    if (emails.length >= 5) return res.status(400).json({ error: 'Max 5 members.' });
+    if (emails.includes(email)) return res.status(400).json({ error: 'Already added.' });
+    emails.push(email);
+    usersDb.update(u.uid, { organizationEmails: emails });
+    const target = usersDb.findByEmail(email);
+    if (target) usersDb.update(target.uid, { subscriptionStatus: 'active', plan: 'organization' });
+    res.json({ organizationEmails: emails });
+  });
+
+  app.post('/api/users/org/remove', authMiddleware, (req: AuthRequest, res: Response) => {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email required.' });
+    const u = usersDb.findById(req.user!.uid);
+    if (!u) return res.status(404).json({ error: 'Not found.' });
+    const emails = (u.organizationEmails || []).filter(e => e !== email);
+    usersDb.update(u.uid, { organizationEmails: emails });
+    const target = usersDb.findByEmail(email);
+    if (target) usersDb.update(target.uid, { subscriptionStatus: 'inactive' });
+    res.json({ organizationEmails: emails });
+  });
+
+  // ──────── STRIPE CHECKOUT ────────
+
+  app.post('/api/create-checkout-session', authMiddleware, async (req: AuthRequest, res: Response) => {
+    const { priceId } = req.body;
     try {
       const stripe = getStripe();
-      
-      // Use the request origin if APP_URL is localhost to ensure correct redirection
-      const baseRedirectUrl = APP_URL.includes('localhost') && req.headers.origin 
-        ? req.headers.origin.replace(/\/$/, '') 
-        : APP_URL;
-
-      console.log(`Using baseRedirectUrl: ${baseRedirectUrl} (APP_URL: ${APP_URL}, origin: ${req.headers.origin})`);
-
-      if (!priceId) {
-        throw new Error('Missing priceId in request body');
-      }
-
-      let finalPriceId = priceId;
-
-      // If it's a product ID, resolve it to its default price
-      if (priceId.startsWith('prod_')) {
-        console.log(`Received Product ID (${priceId}). Attempting to fetch default price...`);
-        try {
-          const product = await stripe.products.retrieve(priceId);
-          if (product.default_price) {
-            finalPriceId = typeof product.default_price === 'string' 
-              ? product.default_price 
-              : product.default_price.id;
-            console.log(`Resolved Product ID ${priceId} to Price ID ${finalPriceId}`);
-          } else {
-            throw new Error(`Product ${priceId} exists but does not have a "Default Price" configured in your Stripe dashboard. Please set a default price or provide a Price ID (starting with 'price_') instead.`);
-          }
-        } catch (err: any) {
-          console.error(`Failed to resolve Product ID ${priceId}:`, err);
-          if (err.type === 'StripeInvalidRequestError' && err.raw?.code === 'resource_missing') {
-            const isTestMode = process.env.STRIPE_SECRET_KEY?.startsWith('sk_test');
-            throw new Error(`The Stripe Product ID "${priceId}" was not found in your Stripe account (${isTestMode ? 'Test Mode' : 'Live Mode'}). Please verify the ID in your Stripe dashboard and ensure you are using the correct API keys.`);
-          }
-          throw new Error(`Stripe Error: ${err.message}`);
-        }
-      }
-
+      const base = appUrl().includes('localhost') && req.headers.origin ? (req.headers.origin as string).replace(/\/$/,'') : appUrl();
+      if (!priceId) throw new Error('Missing priceId');
+      let fp = priceId;
+      if (priceId.startsWith('prod_')) { const prod = await stripe.products.retrieve(priceId); fp = typeof prod.default_price === 'string' ? prod.default_price : prod.default_price?.id || ''; if (!fp) throw new Error('No default price.'); }
       const session = await stripe.checkout.sessions.create({
-        payment_method_types: ['card'],
-        line_items: [
-          {
-            price: finalPriceId,
-            quantity: 1,
-          },
-        ],
-        mode: 'subscription',
-        subscription_data: {
-          trial_period_days: 7,
-        },
-        customer_email: email,
-        client_reference_id: userId,
-        success_url: `${baseRedirectUrl}/?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${baseRedirectUrl}/`,
-        metadata: {
-          userId,
-          plan: priceId === process.env.STRIPE_PRICE_ID_ORG ? 'organization' : 'single',
-        },
+        payment_method_types: ['card'], line_items: [{ price: fp, quantity: 1 }],
+        mode: 'subscription', subscription_data: { trial_period_days: 7 },
+        customer_email: req.user!.email, client_reference_id: req.user!.uid,
+        success_url: `${base}/?session_id={CHECKOUT_SESSION_ID}`, cancel_url: `${base}/`,
+        metadata: { userId: req.user!.uid, plan: priceId === s('STRIPE_PRICE_ID_ORG') ? 'organization' : 'single' },
       });
-
       res.json({ url: session.url });
-    } catch (error: any) {
-      console.error('Stripe error:', error);
-      if (error.type === 'StripeInvalidRequestError' && error.raw?.code === 'resource_missing') {
-        const isTestMode = process.env.STRIPE_SECRET_KEY?.startsWith('sk_test');
-        return res.status(400).json({ 
-          error: `The Stripe resource (Price or Product) was not found in your Stripe account (${isTestMode ? 'Test Mode' : 'Live Mode'}). Please verify your STRIPE_PRICE_ID_SINGLE and STRIPE_PRICE_ID_ORG in settings and ensure they exist in the correct environment.` 
-        });
-      }
-      res.status(500).json({ error: error.message });
-    }
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
   });
 
-  // Chord Editor API Endpoints
+  // ──────── LIBRARY ────────
 
-  // 1. Parse .pro file (Enhanced with analysis)
-  app.post('/api/chords/parse-pro-file', upload.single('proFile'), async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
-      }
-
-      const presentation = await parsePro7File(req.file.buffer);
-      const analysis = analyzePro7File(presentation);
-
-      res.json({
-        title: presentation.title,
-        slides: presentation.slides.map(s => ({
-          id: s.id,
-          label: s.label,
-          lyrics: s.lyrics,
-          notes: s.notes
-        })),
-        analysis
-      });
-    } catch (error: any) {
-      console.error('Parse error:', error);
-      res.status(500).json({ error: error.message || 'Failed to parse ProPresenter file' });
-    }
+  app.get('/api/library', authMiddleware, (req: AuthRequest, res: Response) => {
+    res.json({ items: libraryDb.findByUser(req.user!.uid) });
+  });
+  app.post('/api/library', authMiddleware, (req: AuthRequest, res: Response) => {
+    const item = { ...req.body, userId: req.user!.uid, createdAt: new Date().toISOString() };
+    if (!item.id) item.id = `lib_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+    libraryDb.create(item);
+    res.json({ item });
+  });
+  app.delete('/api/library/:id', authMiddleware, (req: AuthRequest, res: Response) => {
+    const item = libraryDb.findById(req.params.id);
+    if (!item) return res.status(404).json({ error: 'Not found.' });
+    if (item.userId !== req.user!.uid) return res.status(403).json({ error: 'Forbidden.' });
+    libraryDb.delete(req.params.id);
+    res.json({ success: true });
   });
 
-  // New Enhanced Routes for Import System
-  app.post('/api/chords/analyze-pro-file', upload.single('proFile'), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-      const presentation = await parsePro7File(req.file.buffer);
-      const analysis = analyzePro7File(presentation);
-      res.json(analysis);
-    } catch (error: any) {
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-    }
+  // ──────── OWNER SETTINGS (only accessible by OWNER_EMAIL) ────────
+
+  app.get('/api/owner/settings', authMiddleware, ownerMiddleware, (_r: AuthRequest, res: Response) => {
+    res.json({ settings: settingsDb.load() });
   });
 
-  app.post('/api/chords/validate-pro-file', upload.single('proFile'), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-      const presentation = await parsePro7File(req.file.buffer);
-      const analysis = analyzePro7File(presentation);
-      res.json({ valid: analysis.hasChords, analysis });
-    } catch (error: any) {
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-    }
+  app.put('/api/owner/settings', authMiddleware, ownerMiddleware, (req: AuthRequest, res: Response) => {
+    const updates = req.body;
+    if (!updates || typeof updates !== 'object') return res.status(400).json({ error: 'Invalid.' });
+    if (updates.STRIPE_SECRET_KEY) { stripeClient = null; stripeKeyUsed = ''; }
+    if (updates.GOOGLE_CLIENT_ID) { googleClient = null; googleIdUsed = ''; }
+    res.json({ success: true, settings: settingsDb.save(updates) });
   });
 
-  app.post('/api/chords/import-pro-file', upload.single('proFile'), async (req, res) => {
-    try {
-      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-      const presentation = await parsePro7File(req.file.buffer);
-      const analysis = analyzePro7File(presentation);
-      res.json({ presentation, analysis });
-    } catch (error: any) {
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
-    }
-  });
+  // ──────── CHORD ENDPOINTS ────────
 
-  // 2. Transpose lyrics
-  app.post('/api/chords/transpose', (req, res) => {
-    try {
-      const { lyrics, originalKey, targetKey } = req.body;
-      if (!lyrics || !originalKey || !targetKey) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
+  app.post('/api/chords/parse-pro-file', upload.single('proFile'), async (req, res) => { try { if (!req.file) return res.status(400).json({ error: 'No file' }); const p = await parsePro7File(req.file.buffer); res.json({ title: p.title, slides: p.slides.map(sl => ({ id: sl.id, label: sl.label, lyrics: sl.lyrics, notes: sl.notes })), analysis: analyzePro7File(p) }); } catch (e: any) { res.status(500).json({ error: e.message }); } });
+  app.post('/api/chords/analyze-pro-file', upload.single('proFile'), async (req, res) => { try { if (!req.file) return res.status(400).json({ error: 'No file' }); res.json(analyzePro7File(await parsePro7File(req.file.buffer))); } catch (e: any) { res.status(500).json({ error: e.message }); } });
+  app.post('/api/chords/validate-pro-file', upload.single('proFile'), async (req, res) => { try { if (!req.file) return res.status(400).json({ error: 'No file' }); const a = analyzePro7File(await parsePro7File(req.file.buffer)); res.json({ valid: a.hasChords, analysis: a }); } catch (e: any) { res.status(500).json({ error: e.message }); } });
+  app.post('/api/chords/import-pro-file', upload.single('proFile'), async (req, res) => { try { if (!req.file) return res.status(400).json({ error: 'No file' }); const p = await parsePro7File(req.file.buffer); res.json({ presentation: p, analysis: analyzePro7File(p) }); } catch (e: any) { res.status(500).json({ error: e.message }); } });
+  app.post('/api/chords/transpose', (req, res) => { try { const { lyrics, originalKey, targetKey } = req.body; if (!lyrics||!originalKey||!targetKey) return res.status(400).json({ error: 'Missing' }); res.json({ transposedLyrics: transposeLyrics(lyrics, originalKey, targetKey) }); } catch { res.status(500).json({ error: 'Failed' }); } });
+  app.post('/api/chords/validate', (req, res) => { try { const { lyrics } = req.body; if (!lyrics) return res.status(400).json({ error: 'Missing' }); const all = extractChords(lyrics); res.json({ valid: all.filter(c => !validateChordFormat(c)).length===0, allChords: all, invalidChords: all.filter(c => !validateChordFormat(c)) }); } catch { res.status(500).json({ error: 'Failed' }); } });
+  app.post('/api/chords/export-pro-file', (_r, res) => res.json({ message: 'Client-side.' }));
+  app.post('/api/chords/extract-from-notes', (req, res) => { try { const { notesText } = req.body; if (!notesText) return res.status(400).json({ error: 'Missing' }); res.json({ success: true, sections: parseChordsWithSectionHeaders(notesText), allChords: extractChordsFromNotes(notesText) }); } catch { res.status(500).json({ error: 'Failed' }); } });
+  app.post('/api/chords/transpose-notes', (req, res) => { try { const { notesText, originalKey, targetKey } = req.body; if (!notesText||!originalKey||!targetKey) return res.status(400).json({ error: 'Missing' }); res.json({ success: true, transposedNotes: transposeChordNotes(notesText, originalKey, targetKey) }); } catch { res.status(500).json({ error: 'Failed' }); } });
+  app.post('/api/chords/save-to-notes', (_r, res) => res.json({ success: true }));
 
-      const transposedLyrics = transposeLyrics(lyrics, originalKey, targetKey);
-      res.json({ transposedLyrics });
-    } catch (error) {
-      console.error('Transpose error:', error);
-      res.status(500).json({ error: 'Failed to transpose chords' });
-    }
-  });
+  // ──────── VITE / STATIC ────────
 
-  // 3. Validate chords
-  app.post('/api/chords/validate', (req, res) => {
-    try {
-      const { lyrics } = req.body;
-      if (!lyrics) {
-        return res.status(400).json({ error: 'Missing lyrics' });
-      }
-
-      const allChords = extractChords(lyrics);
-      const invalidChords = allChords.filter(c => !validateChordFormat(c));
-
-      res.json({
-        valid: invalidChords.length === 0,
-        allChords,
-        invalidChords
-      });
-    } catch (error) {
-      console.error('Validation error:', error);
-      res.status(500).json({ error: 'Failed to validate chords' });
-    }
-  });
-
-  // 4. Export .pro file (Simplified for this demo, usually returns a download URL or blob)
-  app.post('/api/chords/export-pro-file', (req, res) => {
-    // In a real app, this would use pro7Exporter.ts and return a file
-    // For this implementation, we'll handle the export client-side to avoid server storage issues
-    res.json({ message: 'Export initiated. Please use client-side export for this demo.' });
-  });
-
-  // 5. Extract chords from notes
-  app.post('/api/chords/extract-from-notes', (req, res) => {
-    try {
-      const { notesText } = req.body;
-      if (!notesText) {
-        return res.status(400).json({ error: 'Missing notes text' });
-      }
-
-      const sections = parseChordsWithSectionHeaders(notesText);
-      const allChords = extractChordsFromNotes(notesText);
-
-      res.json({
-        success: true,
-        sections,
-        allChords
-      });
-    } catch (error) {
-      console.error('Extract from notes error:', error);
-      res.status(500).json({ error: 'Failed to extract chords from notes' });
-    }
-  });
-
-  // 6. Transpose notes
-  app.post('/api/chords/transpose-notes', (req, res) => {
-    try {
-      const { notesText, originalKey, targetKey } = req.body;
-      if (!notesText || !originalKey || !targetKey) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
-
-      const transposedNotes = transposeChordNotes(notesText, originalKey, targetKey);
-      res.json({ success: true, transposedNotes });
-    } catch (error) {
-      console.error('Transpose notes error:', error);
-      res.status(500).json({ error: 'Failed to transpose chords in notes' });
-    }
-  });
-
-  // 7. Save to notes (Simplified, usually returns updated presentation)
-  app.post('/api/chords/save-to-notes', (req, res) => {
-    // Similar to export, we'll handle the actual XML update client-side or in a more complex endpoint
-    res.json({ success: true, message: 'Notes update received. Please handle final XML update client-side.' });
-  });
-
-  // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
+    app.get('*', (_r, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log(`Application URL (APP_URL): ${APP_URL}`);
-    console.log(`Webhook Endpoint: ${APP_URL}/api/webhook`);
+    console.log(`Server: http://localhost:${PORT}`);
+    if (!hasAnyUsers()) console.log('*** SETUP REQUIRED: Visit the app to run initial setup. ***');
+    else console.log(`Owner: ${s('OWNER_EMAIL') || '(not set)'}`);
   });
 }
 
