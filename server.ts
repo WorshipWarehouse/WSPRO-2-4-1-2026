@@ -404,10 +404,29 @@ async function startServer() {
     app.get('*', (_r, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
+  // Seed owner account on first boot if none exists
+  if (!hasAnyUsers()) {
+    const ownerEmail = 'caleb@weareworshipwarehouse.com';
+    const ownerPassword = 'Wolfman7!';
+    try {
+      const hash = await bcrypt.hash(ownerPassword, BCRYPT_ROUNDS);
+      const uid = `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      usersDb.create({
+        uid, email: ownerEmail, passwordHash: hash,
+        firstName: 'Caleb', lastName: '',
+        role: 'admin', authProvider: 'email',
+        subscriptionStatus: 'active', createdAt: new Date().toISOString(),
+      });
+      settingsDb.save({ OWNER_EMAIL: ownerEmail });
+      console.log(`Owner account seeded: ${ownerEmail}`);
+    } catch (err) {
+      console.error('Failed to seed owner account:', err);
+    }
+  }
+
   app.listen(Number(PORT), '0.0.0.0', () => {
     console.log(`Server: http://localhost:${PORT}`);
-    if (!hasAnyUsers()) console.log('*** SETUP REQUIRED: Visit the app to run initial setup. ***');
-    else console.log(`Owner: ${s('OWNER_EMAIL') || '(not set)'}`);
+    console.log(`Owner: ${s('OWNER_EMAIL') || '(not set)'}`);
   });
 }
 
