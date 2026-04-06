@@ -99,13 +99,14 @@ function App() {
     googleClientId?: string;
     appleClientId?: string;
   } | null>(null);
+  const [configLoaded, setConfigLoaded] = useState(false);
 
   // Fetch config
   useEffect(() => {
     configApi.get().then((cfg: any) => {
       setStripeConfig(cfg);
       if (cfg.needsSetup) setNeedsSetup(true);
-    }).catch(() => {});
+    }).catch(() => {}).finally(() => setConfigLoaded(true));
   }, []);
 
   // Fetch library
@@ -349,15 +350,15 @@ function App() {
         </div>
       )}
 
-      {/* Setup wizard (shown when no users exist) */}
-      {needsSetup && !isAuthenticated && !isAuthLoading && (
+      {/* Setup wizard (shown when no users exist and config is loaded) */}
+      {configLoaded && needsSetup && !isAuthenticated && (
         <SetupPage onComplete={(token, u) => completeAuth(token, u)} />
       )}
 
-      {/* Main content (hidden during setup) */}
-      {!needsSetup && (
+      {/* Main content */}
+      {(!needsSetup || !configLoaded) && (
       <main className="max-w-7xl mx-auto p-6 md:p-8">
-        {isAuthLoading ? (
+        {(isAuthLoading || !configLoaded) ? (
           <div className="flex items-center justify-center h-[60vh]">
             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-neutral-900" />
           </div>

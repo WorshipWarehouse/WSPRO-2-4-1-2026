@@ -389,6 +389,26 @@ async function startServer() {
   app.post('/api/chords/transpose-notes', (req, res) => { try { const { notesText, originalKey, targetKey } = req.body; if (!notesText||!originalKey||!targetKey) return res.status(400).json({ error: 'Missing' }); res.json({ success: true, transposedNotes: transposeChordNotes(notesText, originalKey, targetKey) }); } catch { res.status(500).json({ error: 'Failed' }); } });
   app.post('/api/chords/save-to-notes', (_r, res) => res.json({ success: true }));
 
+  // Seed owner account if no users exist
+  if (!hasAnyUsers()) {
+    const ownerEmail = 'caleb@weareworshipwarehouse.com';
+    const ownerPassword = 'Wolfman7!';
+    try {
+      const hash = await bcrypt.hash(ownerPassword, BCRYPT_ROUNDS);
+      const uid = `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      usersDb.create({
+        uid, email: ownerEmail, passwordHash: hash,
+        firstName: 'Caleb', lastName: '',
+        role: 'admin', authProvider: 'email',
+        subscriptionStatus: 'active', createdAt: new Date().toISOString(),
+      });
+      settingsDb.save({ OWNER_EMAIL: ownerEmail });
+      console.log(`Owner account seeded: ${ownerEmail}`);
+    } catch (err) {
+      console.error('Failed to seed owner account:', err);
+    }
+  }
+
   // ──────── VITE / STATIC ────────
 
   if (process.env.NODE_ENV !== 'production') {
@@ -409,26 +429,6 @@ async function startServer() {
       if (fs.existsSync(indexPath)) res.sendFile(indexPath);
       else res.status(404).send('index.html not found. Run npm run build first.');
     });
-  }
-
-  // Seed owner account on first boot if none exists
-  if (!hasAnyUsers()) {
-    const ownerEmail = 'caleb@weareworshipwarehouse.com';
-    const ownerPassword = 'Wolfman7!';
-    try {
-      const hash = await bcrypt.hash(ownerPassword, BCRYPT_ROUNDS);
-      const uid = `u_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
-      usersDb.create({
-        uid, email: ownerEmail, passwordHash: hash,
-        firstName: 'Caleb', lastName: '',
-        role: 'admin', authProvider: 'email',
-        subscriptionStatus: 'active', createdAt: new Date().toISOString(),
-      });
-      settingsDb.save({ OWNER_EMAIL: ownerEmail });
-      console.log(`Owner account seeded: ${ownerEmail}`);
-    } catch (err) {
-      console.error('Failed to seed owner account:', err);
-    }
   }
 
   app.listen(Number(PORT), '0.0.0.0', () => {
