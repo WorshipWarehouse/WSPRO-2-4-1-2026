@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: worshipslides-pro
+    runtime: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /opt/render/project/data
+    disk:
+      name: data
+      mountPath: /opt/render/project/data
+      sizeGB: 1

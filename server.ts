@@ -1,12 +1,10 @@
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { createServer as createViteServer } from 'vite';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import Stripe from 'stripe';
@@ -25,8 +23,6 @@ import { transposeChordNotes } from './src/utils/notesTransposer.ts';
 dotenv.config();
 
 const upload = multer({ storage: multer.memoryStorage() });
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const BCRYPT_ROUNDS = 12;
 const PORT = process.env.PORT || 3000;
 
@@ -396,6 +392,7 @@ async function startServer() {
   // ──────── VITE / STATIC ────────
 
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
