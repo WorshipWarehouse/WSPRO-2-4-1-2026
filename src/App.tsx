@@ -21,6 +21,7 @@ import {
   Apple,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 import type { LibraryItem, AppUser, ActivePage } from './types';
 
 import { authApi, setToken, getToken, configApi, stripeApi, libraryApi } from './lib/api';
@@ -527,6 +528,7 @@ function App() {
           <a href="#" className="hover:text-neutral-900 transition-colors">Support</a>
         </div>
       </footer>
+      <SpeedInsights />
     </div>
   );
 }
